@@ -15,6 +15,6 @@ jobs:
       - name: Check shell syntax
         run: bash -n bin/obs lib/*.sh install.sh
       - name: Check Python syntax
-        run: python3 -m py_compile vault_ops.py calendar_sync.py focus_timer.py
+        run: python3 -m py_compile vault_ops.py calendar_sync.py focus_timer.py ics_feed.py
       - name: Run tests
         run: python3 -m unittest discover -s tests -v

@@ -47,9 +47,14 @@ doctor() {
   local cal_credentials="$cal_config_dir/credentials.json"
   local cal_token="$cal_config_dir/token.json"
 
-  if [[ ! -f "$cal_credentials" ]]; then
-    echo "  ! Calendar credentials: not set up ($cal_credentials)"
-    echo "      Create a Desktop OAuth client, then run: obs calendar auth"
+  if [[ -n "${OBSIDIAN_CALENDAR_ICS:-}" && ! -f "$cal_credentials" ]]; then
+    echo "  ✓ Calendar: read-only feed configured (no OAuth needed)"
+    echo "      Verify with: obs calendar auth"
+  elif [[ ! -f "$cal_credentials" ]]; then
+    echo "  ! Calendar: not set up"
+    echo "      Read-only, no Google Cloud project: obs calendar ics"
+    echo "      Full read and write: save a Desktop OAuth client to"
+    echo "      $cal_credentials, then run: obs calendar auth"
   elif [[ ! -f "$cal_token" ]]; then
     echo "  ! Calendar auth: not authorised yet (run: obs calendar auth)"
   else

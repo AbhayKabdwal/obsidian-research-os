@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Added read-only calendar access through a secret iCalendar feed, so
+  `obs calendar sync` and `obs calendar today` now work without a Google
+  Cloud project, an OAuth client or a consent screen. Set
+  `OBSIDIAN_CALENDAR_ICS` to the calendar's "Secret address in iCal format";
+  `obs calendar ics` explains where to find it and reports the active mode.
+  Creating and deleting events still needs OAuth, and says so when it cannot.
+- OAuth wins automatically when credentials are present, so existing setups
+  keep every command. `OBSIDIAN_CALENDAR_MODE=ics|oauth|auto` pins a mode.
+- Narrowed the requested OAuth scope from `.../auth/calendar` to
+  `.../auth/calendar.events`. The tool only ever reads and writes events, so
+  it no longer asks for permission to create or delete whole calendars.
+  Existing tokens carry a wider grant and keep working.
+- `obs calendar auth` now probes the events collection rather than the
+  calendar resource, which the narrower scope does not cover, and reports
+  which mode is active.
+
 - Fixed environment overrides being silently ignored. `config.env` was sourced
   after the environment was read, so `OBSIDIAN_VAULT_PATH=./other obs init`
   (and `OBSIDIAN_VAULT_NAME`, `OBSIDIAN_CMD`, `OBSIDIAN_APP_CMD`,

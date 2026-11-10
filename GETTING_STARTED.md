@@ -193,7 +193,56 @@ python3 -m venv .venv
 Keep `.venv` — every `obs calendar` command uses it. It is gitignored, so it
 never reaches the repository.
 
-### 2. Create a Google OAuth client
+### 2. Pick a mode
+
+There are two ways to reach your calendar. Start with the first unless you
+need to create events from the terminal.
+
+| | Read-only feed | OAuth |
+| --- | --- | --- |
+| Setup | paste one URL | Google Cloud project + consent screen |
+| `calendar sync`, `calendar today` | yes | yes |
+| `calendar add`, `calendar delete` | no | yes |
+| Expires | never | re-consent weekly unless the app is published |
+| Needs a browser | no | yes, once |
+
+```bash
+obs calendar ics      # explains the read-only setup, shows the active mode
+```
+
+#### Read-only feed, in one step
+
+1. Open Google Calendar in a browser.
+2. Hover the calendar in the left sidebar, then **three dots → Settings and
+   sharing**.
+3. Scroll to **Integrate calendar** and copy the
+   **Secret address in iCal format** (it ends in `.ics`).
+4. Put it in `~/.config/obsidian-research-os/config.env`:
+
+   ```bash
+   export OBSIDIAN_CALENDAR_ICS='https://calendar.google.com/calendar/ical/.../basic.ics'
+   ```
+
+5. Check it: `obs calendar auth`
+
+That is the whole setup — no Google Cloud project, no consent screen, no
+token to expire. Treat the URL as a password: anyone who has it can read the
+calendar, and you can reset it from the same screen.
+
+Feed mode expands repeating events for common rules (daily, weekly with
+specific weekdays, monthly, yearly, plus `COUNT`, `UNTIL` and skipped
+dates). An unusual rule falls back to a single occurrence, so it
+under-reports rather than inventing events. If you need exact fidelity for
+complex recurrence, use OAuth.
+
+If both are configured, OAuth wins because it supports every command. To
+force the feed for one command:
+
+```bash
+OBSIDIAN_CALENDAR_MODE=ics obs calendar today
+```
+
+### 3. Create a Google OAuth client
 
 1. Open <https://console.cloud.google.com/apis/credentials> and create or pick
    a project.
@@ -212,7 +261,7 @@ Step 5 is not optional. Without it Google refuses consent with
 `Error 403: access_denied`, because an app in Testing mode only admits
 developer-approved testers.
 
-### 3. Authorise
+### 4. Authorise
 
 ```bash
 obs calendar auth
@@ -222,7 +271,7 @@ A browser opens for consent. On success it prints your calendar name and
 timezone, which means the API is genuinely reachable — not just that a file
 was written.
 
-### 4. Use it
+### 5. Use it
 
 ```bash
 obs calendar today                  # today's events and tasks
@@ -278,6 +327,9 @@ from this tool's own public repository.
 | Calendar: `deleted_client` | OAuth client deleted in Google Cloud | Make a new Desktop client, overwrite `credentials.json`, run `obs calendar auth` |
 | Calendar: stops working after a week | Testing-mode 7-day expiry | `obs calendar auth`, or publish the app |
 | Calendar fails under a systemd timer | Consent needs a browser | Run `obs calendar auth` once in a terminal |
+| Calendar feed returns 404 | Secret address was reset | Copy the current one from Google Calendar |
+| `Cannot create an event: read-only feed mode` | Feed mode cannot write | Set up OAuth, or use Google Calendar directly |
+| Feed misses some repeats | Unsupported recurrence rule | Use OAuth for exact recurrence |
 
 When a stored calendar token can no longer be refreshed, it is discarded and
 re-authorised automatically — you do not need to delete `token.json` by hand.

@@ -134,6 +134,7 @@ EOF
       cat <<'EOF'
 Calendar workflow
 
+  obs calendar ics
   obs calendar auth [--reset]
   obs calendar today
   obs calendar sync [--date YYYY-MM-DD]
@@ -176,7 +177,7 @@ All commands
   obs paper new|import|show
   obs skill chess|typing|note
   obs search "…"
-  obs calendar auth|today|sync|add|delete
+  obs calendar ics|auth|today|sync|add|delete
   obs review week
   obs backup
 
@@ -230,6 +231,10 @@ Usage:
 
   obs search "query"
       Search the Obsidian vault for matching notes and content.
+
+  obs calendar ics
+      Explain read-only calendar access through a secret iCal feed,
+      which needs no Google Cloud project. Reports the active mode.
 
   obs calendar auth [--reset]
       Authorise Google Calendar access and verify the connection.
@@ -2365,7 +2370,17 @@ calendar() {
     exit 1
   fi
 
+  # config.env is sourced, not exported, so hand these to Python explicitly.
+  export OBSIDIAN_CALENDAR_ICS="${OBSIDIAN_CALENDAR_ICS:-}"
+  export OBSIDIAN_CALENDAR_MODE="${OBSIDIAN_CALENDAR_MODE:-auto}"
+
   case "${1:-}" in
+    ics)
+      shift || true
+      "$PYTHON" "$BASE_DIR/calendar_sync.py" \
+        ics "$@"
+      ;;
+
     auth)
       shift || true
       "$PYTHON" "$BASE_DIR/calendar_sync.py" \
@@ -2402,6 +2417,9 @@ calendar() {
 
     *)
       echo "Usage:"
+      echo
+      echo "  obs calendar ics"
+      echo "      Set up read-only access with no Google Cloud project."
       echo
       echo "  obs calendar auth [--reset]"
       echo "      Authorise Google Calendar access and verify it works."

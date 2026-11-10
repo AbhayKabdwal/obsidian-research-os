@@ -10,13 +10,33 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
+
+import ics_feed
 from google.auth.transport.requests import AuthorizedSession, Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+# Only event access is needed: this tool reads, creates and deletes events
+# but never manages calendars themselves. The wider ".../auth/calendar" scope
+# would also permit creating and deleting whole calendars.
+SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 CALENDAR_ID = "primary"
+
+# A Google Calendar "Secret address in iCal format". When set, the read-only
+# commands use it instead of OAuth, which needs no Google Cloud project and
+# no consent screen. Creating and deleting events still requires OAuth.
+ICS_URL = os.environ.get(
+    "OBSIDIAN_CALENDAR_ICS",
+    "",
+).strip()
+
+# auto (default) prefers OAuth when credentials.json exists, else the feed.
+# ics or oauth pin one mode.
+CALENDAR_MODE = os.environ.get(
+    "OBSIDIAN_CALENDAR_MODE",
+    "auto",
+).strip().lower()
 
 CONFIG_DIR = Path(
     os.environ.get(
@@ -459,6 +479,179 @@ def get_service(force_reauth=False):
 # ================================================================
 # Calendar mapping
 # ================================================================
+
+# ================================================================
+# Calendar access mode
+# ================================================================
+
+def calendar_mode():
+    """
+    Decide how to reach the calendar.
+
+    Returns "oauth" for full read/write access or "ics" for the read-only
+    feed. OAuth wins by default when it is configured, so an existing setup
+    keeps every command; the feed is the zero-setup fallback.
+    """
+
+    if CALENDAR_MODE == "ics":
+        if not ICS_URL:
+            raise SystemExit(
+                "OBSIDIAN_CALENDAR_MODE=ics is set, but no feed URL was "
+                "given.\n\n"
+                "Set OBSIDIAN_CALENDAR_ICS to the calendar's "
+                "\"Secret address in iCal format\".\n"
+                "See: obs calendar ics"
+            )
+        return "ics"
+
+    if CALENDAR_MODE == "oauth":
+        return "oauth"
+
+    if CALENDAR_MODE not in ("auto", ""):
+        raise SystemExit(
+            f"Unknown OBSIDIAN_CALENDAR_MODE: {CALENDAR_MODE}\n"
+            "Expected one of: auto, ics, oauth"
+        )
+
+    if CREDENTIALS.exists():
+        return "oauth"
+
+    if ICS_URL:
+        return "ics"
+
+    return "unconfigured"
+
+
+def require_oauth(action):
+    """
+    Stop a write when only the read-only feed is available.
+
+    The iCalendar feed is a download, so there is nothing to write back to.
+    """
+
+    mode = calendar_mode()
+
+    if mode == "oauth":
+        return
+
+    if mode == "ics":
+        raise SystemExit(
+            f"Cannot {action}: the calendar is in read-only feed mode.\n\n"
+            "An iCalendar feed can only be read, so creating and deleting\n"
+            "events needs OAuth. To enable it, create a Desktop OAuth\n"
+            f"client and save it to:\n  {CREDENTIALS}\n\n"
+            "Then run: obs calendar auth\n\n"
+            "`obs calendar sync` and `obs calendar today` keep working in\n"
+            "feed mode."
+        )
+
+    raise SystemExit(
+        "No calendar access is configured.\n\n"
+        "Pick one:\n"
+        "  Read-only, no Google Cloud project needed:\n"
+        "    obs calendar ics\n"
+        "  Full read and write:\n"
+        f"    save a Desktop OAuth client to {CREDENTIALS}\n"
+        "    then run: obs calendar auth"
+    )
+
+
+def fetch_ics_text():
+    """
+    Download the iCalendar feed.
+
+    Proxy settings are left to requests, which reads HTTP_PROXY/HTTPS_PROXY
+    and, unlike an explicit proxies dict, also honours NO_PROXY.
+    """
+
+    try:
+        response = requests.get(
+            ICS_URL,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        raise SystemExit(
+            "Could not fetch the calendar feed.\n"
+            f"{exc}\n\n"
+            "Check the network, and that OBSIDIAN_CALENDAR_ICS is the\n"
+            "current secret address. Resetting it in Google Calendar\n"
+            "invalidates the old URL."
+        )
+
+    if response.status_code == 404:
+        raise SystemExit(
+            "The calendar feed returned 404 (not found).\n\n"
+            "The secret address may have been reset, which invalidates the\n"
+            "old URL. Copy the current one from Google Calendar:\n"
+            "  Settings and sharing -> Secret address in iCal format"
+        )
+
+    if not response.ok:
+        raise SystemExit(
+            "The calendar feed returned "
+            f"HTTP {response.status_code}.\n"
+            f"{response.text[:400]}"
+        )
+
+    text = response.text
+
+    if "BEGIN:VCALENDAR" not in text:
+        raise SystemExit(
+            "That URL did not return an iCalendar feed.\n\n"
+            "Use the \"Secret address in iCal format\", which ends in\n"
+            "/basic.ics - not the calendar's web address."
+        )
+
+    return text
+
+
+def fetch_events_ics(day):
+    """
+    Read one local day of events from the iCalendar feed.
+
+    The window is half-open from midnight to midnight so that an all-day
+    event belonging to the next day is not counted as today's.
+    """
+
+    local_tz = local_zoneinfo()
+
+    start = dt.datetime.combine(
+        day,
+        dt.time.min,
+        tzinfo=local_tz,
+    )
+
+    end = start + dt.timedelta(days=1)
+
+    return ics_feed.events_in_range(
+        fetch_ics_text(),
+        start,
+        end,
+        local_tz,
+    )
+
+
+def read_events(day):
+    """
+    Read one day of events using whichever mode is configured.
+
+    Both modes return dictionaries shaped like the Google Calendar API's,
+    so callers do not need to know which one produced them.
+    """
+
+    mode = calendar_mode()
+
+    if mode == "ics":
+        return fetch_events_ics(day)
+
+    if mode == "unconfigured":
+        require_oauth("read the calendar")
+
+    return fetch_events(
+        get_service(),
+        day,
+    )
+
 
 def mapping_path(vault):
     return (
@@ -936,12 +1129,7 @@ def sync(vault, day=None):
     if day is None:
         day = dt.date.today()
 
-    session = get_service()
-
-    events = fetch_events(
-        session,
-        day,
-    )
+    events = read_events(day)
 
     render_calendar(
         vault,
@@ -1216,6 +1404,8 @@ def add(
             "Event title cannot be empty."
         )
 
+    require_oauth("create an event")
+
     session = get_service()
 
     s = parse_local(
@@ -1338,6 +1528,8 @@ def interactive_add(vault):
       repeat rule
       repeat end
     """
+
+    require_oauth("create an event")
 
     print()
     print("==============================================================")
@@ -1464,12 +1656,7 @@ def today(vault):
 
     day = dt.date.today()
 
-    session = get_service()
-
-    events = fetch_events(
-        session,
-        day,
-    )
+    events = read_events(day)
 
     render_calendar(
         vault,
@@ -1541,6 +1728,8 @@ def delete(vault, event_id, assume_yes=False):
     The event's date is determined before deletion so that
     the corresponding Daily note can be refreshed.
     """
+
+    require_oauth("delete an event")
 
     session = get_service()
 
@@ -1667,16 +1856,58 @@ def delete(vault, event_id, assume_yes=False):
 # CLI
 # ================================================================
 
+def ics_check():
+    """Verify the read-only feed and report what it contains."""
+
+    text = fetch_ics_text()
+
+    day = dt.date.today()
+    events = fetch_events_ics(day)
+
+    names = set()
+
+    for line in ics_feed.unfold(text).split("\n"):
+        name, _, value = ics_feed.split_property(line.strip())
+        if name == "X-WR-CALNAME":
+            names.add(ics_feed.unescape_text(value))
+
+    print("Calendar feed OK (read-only)")
+
+    if names:
+        print(f"  calendar: {sorted(names)[0]}")
+
+    print(f"  events today: {len(events)}")
+    print("  mode:     ics")
+    print()
+    print("Read-only: `obs calendar add` and `obs calendar delete` need")
+    print("OAuth. Run `obs calendar auth` after saving a Desktop OAuth")
+    print(f"client to {CREDENTIALS}")
+
+
 def auth_check(force_reauth=False):
-    """Verify Google Calendar access, authorising if needed."""
+    """Verify calendar access in whichever mode is configured."""
+
+    mode = calendar_mode()
+
+    if mode == "ics":
+        ics_check()
+        return
+
+    if mode == "unconfigured":
+        require_oauth("read the calendar")
 
     session = get_service(
         force_reauth=force_reauth,
     )
 
+    # Probe the events collection rather than the calendar resource:
+    # calendars.get needs the wider ".../auth/calendar" scope, while the
+    # events list is covered by ".../auth/calendar.events" and reports the
+    # calendar's title and timezone in the same response.
     try:
         response = session.get(
-            f"{CALENDAR_API}/calendars/{CALENDAR_ID}",
+            f"{CALENDAR_API}/calendars/{CALENDAR_ID}/events",
+            params={"maxResults": 1},
             timeout=30,
         )
     except Exception as exc:
@@ -1685,14 +1916,17 @@ def auth_check(force_reauth=False):
             f"{exc}"
         )
 
-    if response.status_code == 403:
+    if response.status_code in (401, 403):
         raise SystemExit(
             "Authorised, but Google refused the request:\n"
             f"{response.text}\n\n"
-            "The Google Calendar API is probably not enabled for this\n"
-            "project. Enable it at:\n"
-            "  https://console.cloud.google.com/apis/library/"
-            "calendar-json.googleapis.com"
+            "Two common causes:\n"
+            "  1. The Google Calendar API is not enabled for the project:\n"
+            "     https://console.cloud.google.com/apis/library/"
+            "calendar-json.googleapis.com\n"
+            "  2. The stored token was granted a different scope than the\n"
+            "     one now requested. Re-consent with:\n"
+            "       obs calendar auth --reset"
         )
 
     if response.status_code != 200:
@@ -1708,6 +1942,57 @@ def auth_check(force_reauth=False):
     print(f"  calendar: {calendar.get('summary', CALENDAR_ID)}")
     print(f"  timezone: {calendar.get('timeZone', 'unknown')}")
     print(f"  token:    {TOKEN}")
+    print("  mode:     oauth (read and write)")
+
+
+def ics_help():
+    """Explain the read-only feed mode and report the current state."""
+
+    mode = calendar_mode()
+
+    print("Read-only calendar access (no Google Cloud project needed)")
+    print()
+
+    if ICS_URL:
+        shown = ICS_URL
+
+        # The token in the URL is a credential; show only enough of it to
+        # confirm which feed is configured.
+        if len(shown) > 60:
+            shown = shown[:40] + "..." + shown[-14:]
+
+        print(f"  configured feed: {shown}")
+        print(f"  active mode:     {mode}")
+
+        if mode == "oauth":
+            print()
+            print("  OAuth credentials are present, so OAuth is being used")
+            print("  (it also supports add and delete). To force the feed:")
+            print("    OBSIDIAN_CALENDAR_MODE=ics obs calendar today")
+
+        print()
+        print("Verify it with: obs calendar auth")
+        return
+
+    print("No feed is configured. To set one up:")
+    print()
+    print("  1. Open Google Calendar in a browser.")
+    print("  2. Hover the calendar in the left sidebar, then")
+    print("     three dots -> Settings and sharing.")
+    print("  3. Scroll to Integrate calendar.")
+    print("  4. Copy \"Secret address in iCal format\" (ends in .ics).")
+    print("  5. Add it to your shell profile or")
+    print(f"     {CONFIG_DIR / 'config.env'}:")
+    print()
+    print("       export OBSIDIAN_CALENDAR_ICS='<the URL>'")
+    print()
+    print("  6. Verify with: obs calendar auth")
+    print()
+    print("That URL is a password: anyone holding it can read the")
+    print("calendar. Reset it from the same screen if it leaks.")
+    print()
+    print("Feed mode supports `obs calendar sync` and")
+    print("`obs calendar today`. Creating and deleting events needs OAuth.")
 
 
 def main():
@@ -1727,6 +2012,11 @@ def main():
     # ------------------------------------------------------------
     # auth
     # ------------------------------------------------------------
+
+    p = sub.add_parser(
+        "ics",
+        help="Show how to set up read-only feed access",
+    )
 
     p = sub.add_parser(
         "auth",
@@ -1877,7 +2167,11 @@ def main():
     # Sync
     # ------------------------------------------------------------
 
-    if args.command == "auth":
+    if args.command == "ics":
+
+        ics_help()
+
+    elif args.command == "auth":
 
         auth_check(
             force_reauth=args.reset,

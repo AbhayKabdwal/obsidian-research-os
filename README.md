@@ -130,7 +130,7 @@ obs capture "Title" "Content" | obs inbox review
 obs concept "…" | obs paper new|import|show
 obs skill chess|typing|note
 obs review week | obs streak | obs index | obs backup
-obs calendar today|sync|add|delete
+obs calendar ics|auth|today|sync|add|delete
 ```
 
 Useful examples:
@@ -236,8 +236,21 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-calendar.txt
 ```
 
-Create a Google Cloud project, enable Google Calendar API, and create an OAuth
-**Desktop app** credential. Save the downloaded JSON as:
+Calendar access comes in two tiers. The read-only tier needs no Google Cloud
+project at all:
+
+```bash
+obs calendar ics
+```
+
+That prints how to copy your calendar's **Secret address in iCal format** into
+`OBSIDIAN_CALENDAR_ICS`. With it set, `obs calendar sync` and
+`obs calendar today` work immediately — no consent screen and no token to
+expire. Creating and deleting events needs the OAuth tier below. Set
+`OBSIDIAN_CALENDAR_MODE=ics` to force the feed when both are configured.
+
+For the full tier, create a Google Cloud project, enable Google Calendar API,
+and create an OAuth **Desktop app** credential. Save the downloaded JSON as:
 
 ```text
 ~/.config/obsidian-research-os/credentials.json
