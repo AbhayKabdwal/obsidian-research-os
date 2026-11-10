@@ -238,10 +238,46 @@ Create a Google Cloud project, enable Google Calendar API, and create an OAuth
 ~/.config/obsidian-research-os/credentials.json
 ```
 
-Then run `obs calendar sync`. The first run opens Google authorization. The
-token stays in the same config directory and should never be committed. Google
-Calendar is the source of truth; deleting a rendered event from a Daily note
-does not delete it from Google.
+On the **OAuth consent screen**, add your own Google account under
+**Test users** (or publish the app). Without this, Google blocks the
+authorization and refresh tokens expire after seven days.
+
+Then authorize once:
+
+```bash
+obs calendar auth
+```
+
+This opens Google authorization and verifies the connection, printing the
+calendar name and timezone on success. The token stays in the same config
+directory and should never be committed. Google Calendar is the source of
+truth; deleting a rendered event from a Daily note does not delete it from
+Google.
+
+### Calendar authorization troubleshooting
+
+`obs doctor` reports whether credentials and a token are present, and
+`obs calendar auth` checks the live connection. An expired token is refreshed
+automatically; a token that can no longer be refreshed at all is discarded and
+re-authorized on the next run.
+
+| Google reports | Meaning | Fix |
+| --- | --- | --- |
+| `deleted_client` | The OAuth client was deleted in Google Cloud | Create a new Desktop app client, overwrite `credentials.json`, run `obs calendar auth` |
+| `invalid_client` | `credentials.json` does not match a live client | Re-download the client JSON, then `obs calendar auth --reset` |
+| `invalid_grant` | Consent revoked, or a testing-mode refresh token aged out after 7 days | `obs calendar auth` (add yourself as a Test user to stop it recurring) |
+| `access_denied` / app blocked | Your account is not a Test user | Add it on the OAuth consent screen, then `obs calendar auth` |
+| API disabled (HTTP 403) | Calendar API not enabled for the project | Enable the Google Calendar API, then retry |
+
+To force a fresh consent flow after replacing credentials:
+
+```bash
+obs calendar auth --reset
+```
+
+Authorization needs a terminal and a browser. A `systemd` timer cannot
+authorize on its own, so run `obs calendar auth` once by hand after any
+credential change; the timer then refreshes the token unattended.
 
 ## Optional: Git backup
 

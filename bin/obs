@@ -134,6 +134,7 @@ EOF
       cat <<'EOF'
 Calendar workflow
 
+  obs calendar auth [--reset]
   obs calendar today
   obs calendar sync [--date YYYY-MM-DD]
   obs calendar add
@@ -175,7 +176,7 @@ All commands
   obs paper new|import|show
   obs skill chess|typing|note
   obs search "…"
-  obs calendar today|sync|add|delete
+  obs calendar auth|today|sync|add|delete
   obs review week
   obs backup
 
@@ -229,6 +230,11 @@ Usage:
 
   obs search "query"
       Search the Obsidian vault for matching notes and content.
+
+  obs calendar auth [--reset]
+      Authorise Google Calendar access and verify the connection.
+      Use --reset to discard the stored token and re-run consent,
+      for example after replacing credentials.json.
 
   obs calendar sync
       Sync today's Google Calendar events into today's Daily note.
@@ -2360,6 +2366,12 @@ calendar() {
   fi
 
   case "${1:-}" in
+    auth)
+      shift || true
+      "$PYTHON" "$BASE_DIR/calendar_sync.py" \
+        auth "$@"
+      ;;
+
     sync)
       shift || true
       "$PYTHON" "$BASE_DIR/calendar_sync.py" \
@@ -2390,6 +2402,9 @@ calendar() {
 
     *)
       echo "Usage:"
+      echo
+      echo "  obs calendar auth [--reset]"
+      echo "      Authorise Google Calendar access and verify it works."
       echo
       echo "  obs calendar sync"
       echo "      Sync today's Google Calendar events into today's Daily note."

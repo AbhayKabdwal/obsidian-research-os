@@ -43,6 +43,35 @@ doctor() {
     echo "  ! Calendar environment: optional; create with python3 -m venv .venv"
   fi
 
+  local cal_config_dir="${OBSIDIAN_RESEARCH_OS_CONFIG_DIR:-$HOME/.config/obsidian-research-os}"
+  local cal_credentials="$cal_config_dir/credentials.json"
+  local cal_token="$cal_config_dir/token.json"
+
+  if [[ ! -f "$cal_credentials" ]]; then
+    echo "  ! Calendar credentials: not set up ($cal_credentials)"
+    echo "      Create a Desktop OAuth client, then run: obs calendar auth"
+  elif [[ ! -f "$cal_token" ]]; then
+    echo "  ! Calendar auth: not authorised yet (run: obs calendar auth)"
+  else
+    local cred_id token_id
+    cred_id="$(
+      sed -n 's/.*"client_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$cal_credentials" | head -n 1
+    )"
+    token_id="$(
+      sed -n 's/.*"client_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$cal_token" | head -n 1
+    )"
+
+    if [[ -n "$cred_id" && -n "$token_id" && "$cred_id" != "$token_id" ]]; then
+      echo "  ! Calendar auth: stored token is for a different OAuth client"
+      echo "      Re-authorise with: obs calendar auth --reset"
+    else
+      echo "  ✓ Calendar auth: credentials and token present"
+      echo "      Verify the live connection with: obs calendar auth"
+    fi
+  fi
+
   if [[ -n "$VAULT_PATH" && -d "$VAULT_PATH" ]]; then
     local template missing=0
     for template in Daily.md Research.md Paper.md Inbox.md; do

@@ -161,13 +161,170 @@ def local_zoneinfo():
 # Google authentication
 # ================================================================
 
-def get_service():
-    """Authenticate with Google Calendar and return an AuthorizedSession."""
+FATAL_OAUTH_ERRORS = (
+    "deleted_client",
+    "invalid_client",
+    "invalid_grant",
+    "unauthorized_client",
+    "client_not_found",
+)
+
+
+def _client_id_from_credentials():
+    """Return the client_id configured in credentials.json, or None."""
+
+    try:
+        with open(CREDENTIALS, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+
+    block = (
+        data.get("installed")
+        or data.get("web")
+        or {}
+    )
+
+    return block.get("client_id")
+
+
+def _client_id_from_token():
+    """Return the client_id stored in token.json, or None."""
+
+    try:
+        with open(TOKEN, encoding="utf-8") as fh:
+            return json.load(fh).get("client_id")
+    except Exception:
+        return None
+
+
+def _discard_token():
+    """Remove a token that can no longer be used."""
+
+    try:
+        TOKEN.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _oauth_error_text(exc):
+    """Flatten an OAuth exception into lowercase searchable text."""
+
+    parts = [str(exc)]
+
+    for attr in ("args", "description"):
+        value = getattr(exc, attr, None)
+        if value:
+            parts.append(str(value))
+
+    response = getattr(exc, "response", None)
+
+    if response is not None:
+        try:
+            parts.append(str(response.text))
+        except Exception:
+            pass
+
+    return " ".join(parts).lower()
+
+
+def _missing_credentials_error():
+    return SystemExit(
+        f"Missing Google OAuth credentials:\n"
+        f"  {CREDENTIALS}\n\n"
+        "Create an OAuth client in Google Cloud Console:\n"
+        "  1. https://console.cloud.google.com/apis/credentials\n"
+        "  2. Enable the Google Calendar API for the project.\n"
+        "  3. Create Credentials -> OAuth client ID -> Desktop app.\n"
+        "  4. Download the JSON and save it to the path above.\n"
+        "  5. Under OAuth consent screen, add your Google account\n"
+        "     as a Test user (or publish the app) so consent works.\n\n"
+        "Then run: obs calendar auth"
+    )
+
+
+def _dead_client_error(detail):
+    client_id = _client_id_from_credentials() or "unknown"
+
+    return SystemExit(
+        "Google rejected the OAuth client in:\n"
+        f"  {CREDENTIALS}\n"
+        f"  client_id: {client_id}\n\n"
+        f"Google said: {detail}\n\n"
+        "This client no longer exists or is no longer authorised, so no\n"
+        "stored token can be refreshed. Create a replacement client:\n"
+        "  1. https://console.cloud.google.com/apis/credentials\n"
+        "  2. Enable the Google Calendar API for the project.\n"
+        "  3. Create Credentials -> OAuth client ID -> Desktop app.\n"
+        f"  4. Overwrite {CREDENTIALS} with the downloaded JSON.\n"
+        "  5. Under OAuth consent screen, add your Google account\n"
+        "     as a Test user (or publish the app).\n\n"
+        "Then run: obs calendar auth"
+    )
+
+
+def _run_consent_flow():
+    """Run the interactive browser consent flow and return fresh creds."""
+
+    if not CREDENTIALS.exists():
+        raise _missing_credentials_error()
+
+    try:
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(CREDENTIALS),
+            SCOPES,
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            f"Could not read Google OAuth credentials:\n"
+            f"  {CREDENTIALS}\n\n"
+            f"{exc}\n\n"
+            "The file should be the JSON downloaded for a Desktop app\n"
+            "OAuth client, containing an \"installed\" section."
+        )
+
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "Google Calendar needs interactive authorisation, but this\n"
+            "session has no terminal attached (it may be a systemd timer\n"
+            "or cron job).\n\n"
+            "Run this once from a terminal, then retry:\n"
+            "  obs calendar auth"
+        )
+
+    try:
+        return flow.run_local_server(
+            port=0,
+            open_browser=True,
+        )
+    except Exception as exc:
+        text = _oauth_error_text(exc)
+
+        for code in FATAL_OAUTH_ERRORS:
+            if code in text:
+                raise _dead_client_error(code)
+
+        raise SystemExit(
+            "Google OAuth authorisation failed.\n"
+            f"{exc}\n\n"
+            "If a browser did not open, copy the printed URL into one\n"
+            "manually. If Google reported that the app is blocked, add\n"
+            "your account as a Test user on the OAuth consent screen."
+        )
+
+
+def authorize(force_reauth=False):
+    """Obtain valid Google credentials, re-authorising when necessary."""
 
     CONFIG_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    if force_reauth:
+        _discard_token()
 
     creds = None
 
@@ -176,49 +333,74 @@ def get_service():
     # ------------------------------------------------------------
 
     if TOKEN.exists():
-        try:
-            creds = Credentials.from_authorized_user_file(
-                str(TOKEN),
-                SCOPES,
+
+        # A token minted for a previous OAuth client can never be
+        # refreshed against the current one. Drop it up front rather
+        # than failing on an opaque invalid_client from Google.
+
+        cred_client = _client_id_from_credentials()
+        token_client = _client_id_from_token()
+
+        if cred_client and token_client and cred_client != token_client:
+            print(
+                "Stored Google token belongs to a different OAuth client; "
+                "re-authorising.",
+                file=sys.stderr,
             )
-        except Exception:
-            creds = None
+            _discard_token()
+
+        else:
+            try:
+                creds = Credentials.from_authorized_user_file(
+                    str(TOKEN),
+                    SCOPES,
+                )
+            except Exception:
+                creds = None
 
     # ------------------------------------------------------------
     # Refresh expired token
     # ------------------------------------------------------------
 
-    if creds and creds.expired and creds.refresh_token:
+    if creds and not creds.valid and creds.refresh_token:
+
         try:
             creds.refresh(Request())
+
         except Exception as exc:
-            raise SystemExit(
-                "Could not refresh Google OAuth token.\n"
-                f"{exc}"
-            )
+            text = _oauth_error_text(exc)
+
+            if any(code in text for code in FATAL_OAUTH_ERRORS):
+
+                # The grant is permanently dead: the client was deleted,
+                # consent was revoked, or a testing-mode refresh token
+                # aged out after seven days. A stored token cannot
+                # recover from any of these, so start a fresh consent
+                # flow instead of exiting.
+
+                print(
+                    "Stored Google token can no longer be refreshed; "
+                    "re-authorising.",
+                    file=sys.stderr,
+                )
+
+                _discard_token()
+                creds = None
+
+            else:
+                raise SystemExit(
+                    "Could not refresh Google OAuth token.\n"
+                    f"{exc}\n\n"
+                    "This is usually a transient network or proxy problem.\n"
+                    "If it persists, re-authorise with: obs calendar auth"
+                )
 
     # ------------------------------------------------------------
-    # First-time authentication
+    # First-time or repeat authentication
     # ------------------------------------------------------------
 
     if not creds or not creds.valid:
-
-        if not CREDENTIALS.exists():
-            raise SystemExit(
-                f"Missing Google OAuth credentials:\n"
-                f"  {CREDENTIALS}\n\n"
-                "Create a Desktop OAuth client and save "
-                "the downloaded JSON there."
-            )
-
-        flow = InstalledAppFlow.from_client_secrets_file(
-            str(CREDENTIALS),
-            SCOPES,
-        )
-
-        creds = flow.run_local_server(
-            port=0
-        )
+        creds = _run_consent_flow()
 
     # ------------------------------------------------------------
     # Save token
@@ -233,6 +415,16 @@ def get_service():
         TOKEN.chmod(0o600)
     except OSError:
         pass
+
+    return creds
+
+
+def get_service(force_reauth=False):
+    """Authenticate with Google Calendar and return an AuthorizedSession."""
+
+    creds = authorize(
+        force_reauth=force_reauth,
+    )
 
     # ------------------------------------------------------------
     # Proxy
@@ -1475,6 +1667,49 @@ def delete(vault, event_id, assume_yes=False):
 # CLI
 # ================================================================
 
+def auth_check(force_reauth=False):
+    """Verify Google Calendar access, authorising if needed."""
+
+    session = get_service(
+        force_reauth=force_reauth,
+    )
+
+    try:
+        response = session.get(
+            f"{CALENDAR_API}/calendars/{CALENDAR_ID}",
+            timeout=30,
+        )
+    except Exception as exc:
+        raise SystemExit(
+            "Authorised, but could not reach the Google Calendar API.\n"
+            f"{exc}"
+        )
+
+    if response.status_code == 403:
+        raise SystemExit(
+            "Authorised, but Google refused the request:\n"
+            f"{response.text}\n\n"
+            "The Google Calendar API is probably not enabled for this\n"
+            "project. Enable it at:\n"
+            "  https://console.cloud.google.com/apis/library/"
+            "calendar-json.googleapis.com"
+        )
+
+    if response.status_code != 200:
+        raise SystemExit(
+            "Authorised, but the Google Calendar API returned "
+            f"HTTP {response.status_code}:\n"
+            f"{response.text}"
+        )
+
+    calendar = response.json()
+
+    print("Google Calendar authorisation OK")
+    print(f"  calendar: {calendar.get('summary', CALENDAR_ID)}")
+    print(f"  timezone: {calendar.get('timeZone', 'unknown')}")
+    print(f"  token:    {TOKEN}")
+
+
 def main():
 
     parser = argparse.ArgumentParser(
@@ -1487,6 +1722,21 @@ def main():
     sub = parser.add_subparsers(
         dest="command",
         required=True,
+    )
+
+    # ------------------------------------------------------------
+    # auth
+    # ------------------------------------------------------------
+
+    p = sub.add_parser(
+        "auth",
+        help="Authorise (or re-authorise) Google Calendar access",
+    )
+
+    p.add_argument(
+        "--reset",
+        action="store_true",
+        help="Discard the stored token and force a fresh consent flow",
     )
 
     # ------------------------------------------------------------
@@ -1627,7 +1877,17 @@ def main():
     # Sync
     # ------------------------------------------------------------
 
-    if args.command == "sync":
+    if args.command == "auth":
+
+        auth_check(
+            force_reauth=args.reset,
+        )
+
+    # ------------------------------------------------------------
+    # Sync
+    # ------------------------------------------------------------
+
+    elif args.command == "sync":
 
         day = None
 
