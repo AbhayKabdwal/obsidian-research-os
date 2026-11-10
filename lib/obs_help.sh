@@ -29,6 +29,7 @@ RESEARCH & LEARNING
 
 ORGANIZE & SYNC
   obs index                  Refresh note indexes
+  obs calendar auth          Authorise Google Calendar
   obs calendar today|sync|add|delete
   obs backup                 Commit the vault to Git
   obs backup status          Check backup health

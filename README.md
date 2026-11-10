@@ -5,6 +5,10 @@ helps you begin the day, keep tasks from drifting, capture thoughts before they
 disappear, and keep research and practice visible. Your notes stay ordinary
 Markdown files in your own vault; this tool just makes the recurring bits quick.
 
+**New here?** Follow [GETTING_STARTED.md](GETTING_STARTED.md) for a
+step-by-step walkthrough from a fresh clone to a working daily routine. This
+README is the full reference.
+
 ## Who this is for
 
 This is a good fit if you:
@@ -86,7 +90,8 @@ If your vault has a different display name inside Obsidian, supply it too:
 obs setup ~/Documents/My-Research-Vault "My Research Vault"
 ```
 
-To use another vault for one command without changing your saved setup:
+To use another vault for one command without changing your saved setup
+(an environment variable takes precedence over the saved config):
 
 ```bash
 OBSIDIAN_VAULT_PATH=./demo-vault OBSIDIAN_VAULT_NAME=demo-vault obs init

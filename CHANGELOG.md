@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed environment overrides being silently ignored. `config.env` was sourced
+  after the environment was read, so `OBSIDIAN_VAULT_PATH=./other obs init`
+  (and `OBSIDIAN_VAULT_NAME`, `OBSIDIAN_CMD`, `OBSIDIAN_APP_CMD`,
+  `OBS_START_HOOK`) operated on the saved vault instead of the requested one.
+  An explicit environment variable now wins over the saved config.
+- Added `GETTING_STARTED.md`, a step-by-step setup and first-day walkthrough.
+- `obs help` now lists `obs calendar auth`.
+
 - Fixed Google Calendar OAuth getting permanently stuck: a stored token that
   can no longer be refreshed (`deleted_client`, `invalid_client`,
   `invalid_grant`, `unauthorized_client`) is now discarded and re-authorized
